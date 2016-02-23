@@ -199,19 +199,20 @@ def get_aws_metadata(headers, provider=None):
     return metadata
 
 
-def retry_url(url, retry_on_404=True, num_retries=10):
+def retry_url(url, retry_on_404=True, num_retries=10, timeout=None):
     """
     Retry a url.  This is specifically used for accessing the metadata
     service on an instance.  Since this address should never be proxied
     (for security reasons), we create a ProxyHandler with a NULL
     dictionary to override any proxy settings in the environment.
     """
+    open_timeout = timeout if timeout is not None else socket.getdefaulttimeout()
     for i in range(0, num_retries):
         try:
             proxy_handler = urllib.request.ProxyHandler({})
             opener = urllib.request.build_opener(proxy_handler)
             req = urllib.request.Request(url)
-            r = opener.open(req)
+            r = opener.open(req, timeout=open_timeout)
             result = r.read()
 
             if(not isinstance(result, six.string_types) and
@@ -234,17 +235,18 @@ def retry_url(url, retry_on_404=True, num_retries=10):
     return ''
 
 
-def _get_instance_metadata(url, num_retries):
-    return LazyLoadMetadata(url, num_retries)
+def _get_instance_metadata(url, num_retries, timeout=None):
+    return LazyLoadMetadata(url, num_retries, timeout)
 
 
 class LazyLoadMetadata(dict):
-    def __init__(self, url, num_retries):
+    def __init__(self, url, num_retries, timeout=None):
         self._url = url
         self._num_retries = num_retries
+        self._timeout = timeout
         self._leaves = {}
         self._dicts = []
-        data = boto.utils.retry_url(self._url, num_retries=self._num_retries)
+        data = boto.utils.retry_url(self._url, num_retries=self._num_retries, timeout=self._timeout)
         if data:
             fields = data.split('\n')
             for field in fields:
@@ -284,7 +286,8 @@ class LazyLoadMetadata(dict):
                     val = boto.utils.retry_url(
                         self._url + urllib.parse.quote(resource,
                                                        safe="/:"),
-                        num_retries=self._num_retries)
+                        num_retries=self._num_retries,
+                        timeout=self._timeout)
                     if val and val[0] == '{':
                         val = json.loads(val)
                         break
@@ -391,17 +394,11 @@ def get_instance_metadata(version='latest', url='http://169.254.169.254',
     will time out after the specified number of seconds.
 
     """
-    if timeout is not None:
-        original = socket.getdefaulttimeout()
-        socket.setdefaulttimeout(timeout)
     try:
         metadata_url = _build_instance_metadata_url(url, version, data)
-        return _get_instance_metadata(metadata_url, num_retries=num_retries)
+        return _get_instance_metadata(metadata_url, num_retries=num_retries, timeout=timeout)
     except urllib.error.URLError as e:
         return None
-    finally:
-        if timeout is not None:
-            socket.setdefaulttimeout(original)
 
 
 def get_instance_identity(version='latest', url='http://169.254.169.254',
@@ -412,14 +409,11 @@ def get_instance_identity(version='latest', url='http://169.254.169.254',
     iid = {}
     base_url = _build_instance_metadata_url(url, version,
                                             'dynamic/instance-identity/')
-    if timeout is not None:
-        original = socket.getdefaulttimeout()
-        socket.setdefaulttimeout(timeout)
     try:
-        data = retry_url(base_url, num_retries=num_retries)
+        data = retry_url(base_url, num_retries=num_retries, timeout=timeout)
         fields = data.split('\n')
         for field in fields:
-            val = retry_url(base_url + '/' + field + '/')
+            val = retry_url(base_url + '/' + field + '/', timeout=timeout)
             if val[0] == '{':
                 val = json.loads(val)
             if field:
@@ -427,15 +421,12 @@ def get_instance_identity(version='latest', url='http://169.254.169.254',
         return iid
     except urllib.error.URLError as e:
         return None
-    finally:
-        if timeout is not None:
-            socket.setdefaulttimeout(original)
 
 
 def get_instance_userdata(version='latest', sep=None,
-                          url='http://169.254.169.254'):
+                          url='http://169.254.169.254', timeout=None):
     ud_url = _build_instance_metadata_url(url, version, 'user-data')
-    user_data = retry_url(ud_url, retry_on_404=False)
+    user_data = retry_url(ud_url, retry_on_404=False, timeout=timeout)
     if user_data:
         if sep:
             l = user_data.split(sep)
